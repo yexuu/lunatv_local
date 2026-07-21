@@ -1,0 +1,21 @@
+# LunaTV-config 本地同步服务
+# 启动: docker compose up -d
+# 日志: docker compose logs -f
+services:
+  lunatv-sync:
+    build: .
+    image: lunatv-sync:latest
+    container_name: lunatv-sync
+    restart: unless-stopped
+    ports:
+      - "8899:8899"
+    volumes:
+      # 缓存映射到宿主机, 容器重建后沿用旧缓存兜底
+      - ./data:/app/data
+    environment:
+      # 默认版本: jin18(纯净) / jingjian(含成人) / full(完整)
+      LUNATV_DEFAULT_SOURCE: jin18
+      # 同步间隔(分钟)
+      LUNATV_REFRESH_MINUTES: "360"
+      # GitHub 加速镜像前缀, 远程机器访问 GitHub 困难时取消注释
+      # LUNATV_MIRROR_PREFIX: https://ghproxy.net/
