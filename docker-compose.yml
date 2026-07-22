@@ -17,5 +17,6 @@ services:
       LUNATV_DEFAULT_SOURCE: jin18
       # 同步间隔(分钟)
       LUNATV_REFRESH_MINUTES: "360"
-      # GitHub 加速镜像前缀, 远程机器访问 GitHub 困难时取消注释
-      # LUNATV_MIRROR_PREFIX: https://ghproxy.net/
+      # 服务已内置"官方地址失败自动切换加速镜像", 无需配置;
+      # 如需自定义镜像列表, 取消注释(多个用英文逗号分隔)
+      # LUNATV_MIRROR_PREFIX: https://ghproxy.net/,https://ghfast.top/

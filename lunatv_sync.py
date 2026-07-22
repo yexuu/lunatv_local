@@ -51,8 +51,14 @@ SOURCE_FILES: Dict[str, str] = {
 UPSTREAM_BASE = (
     "https://raw.githubusercontent.com/hafrey1/LunaTV-config/main/"
 )
-MAX_RETRIES = 3
-REQUEST_TIMEOUT = 20  # 秒
+# 内置 GitHub 加速镜像前缀, 官方地址失败/超时后按序切换;
+# 可用 LUNATV_MIRROR_PREFIX 环境变量覆盖(多个用英文逗号分隔)
+DEFAULT_MIRROR_PREFIXES: Tuple[str, ...] = (
+    "https://ghproxy.net/",
+    "https://ghfast.top/",
+    "https://gh-proxy.com/",
+)
+REQUEST_TIMEOUT = 15  # 秒, 单地址超时后即切换下一个候选地址
 # 路由: /config/<版本>.json 或 /tvbox/<版本>.json
 ROUTE_PATTERN = re.compile(r"^/(config|tvbox)/([a-z0-9]+)\.json$")
 
@@ -62,7 +68,7 @@ class ServiceConfig:
     """服务运行配置, 全部来自环境变量(或 .env)。"""
 
     default_source: str
-    mirror_prefix: str
+    mirror_prefixes: Tuple[str, ...]
     port: int
     refresh_minutes: int
     data_dir: Path
@@ -85,25 +91,30 @@ class ServiceConfig:
                 f"LUNATV_DEFAULT_SOURCE 非法: {default_source}, "
                 f"可选值: {list(SOURCE_FILES)}"
             )
+        mirror_env = os.getenv("LUNATV_MIRROR_PREFIX", "").strip()
+        mirror_prefixes = tuple(
+            p.strip() for p in mirror_env.split(",") if p.strip()
+        ) or DEFAULT_MIRROR_PREFIXES
         return cls(
             default_source=default_source,
-            mirror_prefix=os.getenv("LUNATV_MIRROR_PREFIX", "").strip(),
+            mirror_prefixes=mirror_prefixes,
             port=int(os.getenv("LUNATV_PORT", "8899")),
             refresh_minutes=int(os.getenv("LUNATV_REFRESH_MINUTES", "360")),
             data_dir=Path(os.getenv("LUNATV_DATA_DIR", "data")),
         )
 
-    def upstream_url(self, source: str) -> str:
-        """拼接指定版本的上游 raw 地址(可带加速镜像前缀)。
+    def candidate_urls(self, source: str) -> Tuple[str, ...]:
+        """返回指定版本的候选下载地址(官方优先, 加速镜像兜底)。
 
         Args:
             source: 版本名, 见 SOURCE_FILES。
 
         Returns:
-            str: 完整下载地址。
+            Tuple[str, ...]: 按尝试顺序排列的完整下载地址。
         """
-        return (
-            f"{self.mirror_prefix}{UPSTREAM_BASE}{SOURCE_FILES[source]}"
+        official = f"{UPSTREAM_BASE}{SOURCE_FILES[source]}"
+        return (official,) + tuple(
+            f"{prefix}{official}" for prefix in self.mirror_prefixes
         )
 
 
@@ -221,26 +232,31 @@ class ConfigStore:
             }
 
 
-def fetch_upstream(url: str) -> Dict[str, Any]:
-    """带重试地拉取上游 JSON 配置。
+def fetch_upstream(urls: Tuple[str, ...]) -> Dict[str, Any]:
+    """依次尝试候选地址拉取上游 JSON, 首个成功即返回。
+
+    官方地址在前、加速镜像在后, 单地址失败或超时(REQUEST_TIMEOUT)
+    自动切换下一个候选地址。
 
     Args:
-        url: 上游 raw JSON 地址。
+        urls: 按尝试顺序排列的候选地址。
 
     Returns:
         Dict[str, Any]: 解析后的 MoonTV 格式配置。
 
     Raises:
-        RuntimeError: 重试耗尽仍失败时。
+        RuntimeError: 全部候选地址均失败时。
     """
     last_error: Optional[Exception] = None
-    for attempt in range(1, MAX_RETRIES + 1):
+    for idx, url in enumerate(urls, start=1):
         try:
             resp = requests.get(url, timeout=REQUEST_TIMEOUT)
             resp.raise_for_status()
             data = resp.json()
             if "api_site" not in data or not data["api_site"]:
                 raise ValueError("上游返回内容缺少 api_site 字段")
+            if idx > 1:
+                logger.info("官方地址不可用, 已切换加速地址: %s", url)
             return data
         except (
             requests.exceptions.RequestException,
@@ -248,9 +264,10 @@ def fetch_upstream(url: str) -> Dict[str, Any]:
         ) as exc:
             last_error = exc
             logger.warning(
-                "拉取上游失败(第 %d/%d 次): %s", attempt, MAX_RETRIES, exc
+                "候选地址失败(%d/%d), 切换下一个: %s (%s)",
+                idx, len(urls), url, exc,
             )
-    raise RuntimeError(f"拉取上游配置失败: {url}") from last_error
+    raise RuntimeError("全部候选地址拉取失败") from last_error
 
 
 def convert_to_tvbox(moontv: Dict[str, Any]) -> Dict[str, Any]:
@@ -296,7 +313,7 @@ def sync_all(config: ServiceConfig, store: ConfigStore) -> int:
     ok = 0
     for source in SOURCE_FILES:
         try:
-            moontv = fetch_upstream(config.upstream_url(source))
+            moontv = fetch_upstream(config.candidate_urls(source))
             tvbox = convert_to_tvbox(moontv)
             store.update(source, moontv, tvbox)
             logger.info(

@@ -25,6 +25,8 @@ lunatv_local/
 ├── requirements.txt    # Python 依赖
 ├── Dockerfile          # 镜像构建
 ├── docker-compose.yml  # 一键部署（含 data 卷映射）
+├── package.sh          # 离线部署打包脚本（产物在 dist/）
+├── deploy/             # 离线部署模板（deploy.sh + 纯镜像 compose）
 ├── .env.example        # 裸机部署配置模板
 └── data/               # 缓存目录（自动生成，Docker 下映射到宿主机）
     ├── moontv_<版本>.json
@@ -43,7 +45,27 @@ docker compose logs -f    # 应看到三个版本 "同步完成"
 
 `data/` 目录通过卷映射持久化在宿主机，容器重建后自动沿用旧缓存。
 
-### 方式二：裸机 + systemd
+### 方式二：离线打包部署（无外网/无源码机器）
+
+在能构建镜像的机器上打包：
+
+```bash
+cd lunatv_local
+bash package.sh    # 无 docker 权限时: sudo bash package.sh
+# 产物: dist/lunatv-sync-deploy.tar.gz
+```
+
+拷贝到目标机器后一键导入并启动：
+
+```bash
+tar -xzf lunatv-sync-deploy.tar.gz
+cd lunatv-sync-deploy
+bash deploy.sh     # docker load 导入镜像 + 启动服务
+```
+
+目标机器只需安装 Docker，无需源码、无需访问 GitHub。
+
+### 方式三：裸机 + systemd
 
 ```bash
 # Python 3.9+
@@ -100,7 +122,7 @@ sudo systemctl enable --now lunatv-sync
 | `LUNATV_DEFAULT_SOURCE` | `jin18` | `/config.json`、`/tvbox.json` 返回的默认版本 |
 | `LUNATV_PORT` | `8899` | HTTP 服务端口 |
 | `LUNATV_REFRESH_MINUTES` | `360` | 自动同步间隔（分钟） |
-| `LUNATV_MIRROR_PREFIX` | 空 | GitHub 加速镜像前缀，如 `https://ghproxy.net/` |
+| `LUNATV_MIRROR_PREFIX` | 内置列表 | GitHub 加速镜像前缀，逗号分隔多个；默认内置 `ghproxy.net`、`ghfast.top`、`gh-proxy.com`，官方地址失败/超时自动按序切换 |
 | `LUNATV_DATA_DIR` | `data` | 缓存目录（Docker 内固定为 `/app/data`） |
 
 ## 缓存文件格式
@@ -147,8 +169,10 @@ sudo systemctl enable --now lunatv-sync
 这正是"自更新"机制在起作用。
 
 **Q: 远程机器访问不了 raw.githubusercontent.com？**
-设置 `LUNATV_MIRROR_PREFIX=https://ghproxy.net/`（或其他可用的
-GitHub 加速前缀）。
+无需配置：官方地址失败或超时（15 秒）会自动按序切换内置加速镜像
+（`ghproxy.net` → `ghfast.top` → `gh-proxy.com`），日志中会提示
+"已切换加速地址"。若内置镜像全部失效，可用 `LUNATV_MIRROR_PREFIX`
+自定义镜像列表（逗号分隔）。
 
 **Q: 换默认版本需要改客户端地址吗？**
 不需要。改 `LUNATV_DEFAULT_SOURCE` 后重启服务即可，客户端订阅
